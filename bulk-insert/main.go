@@ -14,6 +14,38 @@ import (
 	"github.com/jackc/pgx/v4"
 )
 
+type RowSrc struct {
+	cr     *csv.Reader
+	values []interface{}
+	err    error
+}
+
+func (r *RowSrc) Next() bool {
+	record, err := r.cr.Read()
+	if errors.Is(err, io.EOF) {
+		return false
+	}
+
+	if err != nil {
+		r.err = err
+		return false
+	}
+
+	r.values = make([]interface{}, 2)
+	r.values[0] = record[0]
+	r.values[1] = record[1]
+
+	return true
+}
+
+func (r *RowSrc) Values() ([]interface{}, error) {
+	return r.values, r.err
+}
+
+func (r *RowSrc) Err() error {
+	return r.err
+}
+
 func main() {
 	conn, err := newConn()
 	if err != nil {
@@ -66,29 +98,18 @@ func insertsUsers(conn *pgx.Conn) error {
 	}
 
 	// read csv file
-	cr := csv.NewReader(f)
-
-	if err := conn.BeginTxFunc(context.Background(), pgx.TxOptions{}, func(tx pgx.Tx) error {
-		for {
-			record, err := cr.Read()
-			if errors.Is(err, io.EOF) {
-				break
-			}
-
-			if err != nil {
-				return fmt.Errorf("cr.Read %w", err)
-			}
-
-			_, err = conn.Exec(context.Background(), "INSERT INTO users(first_name, last_name) VALUES($1, $2)", record[0], record[1])
-			if err != nil {
-				return fmt.Errorf("conn.Exec %w", err)
-			}
-		}
-
-		return nil
-	}); err != nil {
-		return fmt.Errorf("conn.BeginTxFunc %w", err)
+	rowSrc := RowSrc{
+		cr: csv.NewReader(f),
 	}
+
+	count, err := conn.CopyFrom(context.Background(), pgx.Identifier{"users"}, []string{"first_name", "last_name"}, &rowSrc)
+	if err != nil {
+		return fmt.Errorf("conn.CopyFrom %w", err)
+	}
+
+	fmt.Println("rows", count)
+
+	// ---------
 
 	return nil
 
